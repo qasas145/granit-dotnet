@@ -1,6 +1,5 @@
 using System.Net;
 using System.Net.Sockets;
-using Granit.Http.Security;
 
 namespace Granit.Webhooks.Internal;
 
@@ -20,7 +19,7 @@ internal static class WebhookSsrfConnectCallback
 
         // Validate ALL resolved IPs before connecting — a multi-homed host might mix
         // public and private addresses.
-        IPAddress? blocked = Array.Find(entry.AddressList, PrivateNetworkClassifier.IsBlocked);
+        IPAddress? blocked = Array.Find(entry.AddressList, WebhookSsrfGuard.IsBlockedIpAddress);
         if (blocked is not null)
         {
             throw new HttpRequestException(

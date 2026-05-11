@@ -3,29 +3,42 @@ using System.Text.Json;
 namespace Granit.Entities.Actions.Execution;
 
 /// <summary>
-/// Optional bulk-friendly counterpart to <see cref="IEntityActionExecutor{TEntity}"/>
-/// (ADR-056 §Q4). When registered, the bulk endpoint dispatches the whole list
-/// in one call (e.g. one <c>UPDATE … WHERE Id IN (…)</c>). When missing, the
-/// framework's <c>BulkActionExecutionOrchestrator</c> loops the per-row executor
-/// — same observable behaviour, N queries.
+/// Optional bulk-optimized action executor. When registered for an action,
+/// the framework uses this instead of looping per-entity via
+/// <see cref="IEntityActionExecutor{TEntity}"/>. Allows atomicity, transaction
+/// batching, and bulk-specific optimizations (e.g., bulk UPDATE SQL).
 /// </summary>
-/// <typeparam name="TEntity">The entity the action targets.</typeparam>
+/// <remarks>
+/// Not implementing this interface does not prevent bulk operations — the
+/// framework falls back to per-entity <see cref="IEntityActionExecutor{TEntity}"/>
+/// calls. Register this interface only when the action's logic benefits from
+/// seeing all affected entities at once (e.g., cascading updates, audit trails
+/// spanning multiple rows, or database-side bulk operations).
+/// </remarks>
+/// <typeparam name="TEntity">The entity type this executor acts upon.</typeparam>
 public interface IBulkActionExecutor<TEntity>
     where TEntity : class
 {
     /// <summary>
-    /// Executes the action against the rows identified by <paramref name="ids"/>.
+    /// Executes the action against a batch of entity instances. All entities are
+    /// materialized from the database before this call. The executor owns
+    /// transaction lifecycle and side effects.
     /// </summary>
-    /// <param name="ids">Primary keys of the targeted rows. Always non-empty; the framework guards an empty input.</param>
-    /// <param name="payload">Free-form JSON payload supplied by the caller.</param>
-    /// <param name="cancellationToken">Request cancellation token.</param>
+    /// <param name="entities">All entities targeted by the bulk operation.
+    /// Read-only collection to prevent accidental modification outside executor
+    /// control. Executor must materialize its own mutable copies if updates
+    /// are needed.</param>
+    /// <param name="payload">Client-provided action parameters as a JSON element.
+    /// Same semantics as <see cref="IEntityActionExecutor{TEntity}.ExecuteAsync"/>:
+    /// opaque to framework, shape validation is executor responsibility.</param>
+    /// <param name="cancellationToken">Cancellation signal for async work.</param>
     /// <returns>
-    /// The set of affected (post-save) entities plus a structured per-row failure
-    /// list. Hosts MUST return one failure per missing / rejected id so the caller
-    /// can re-issue against the failed rows.
+    /// <see cref="BulkActionResult"/> containing the count of successfully
+    /// affected rows and a list of per-row failures (if any). On partial success,
+    /// committed rows are reported and failures listed separately.
     /// </returns>
-    Task<BulkActionExecutionResult<TEntity>> ExecuteBulkAsync(
-        IReadOnlyList<Guid> ids,
+    Task<BulkActionResult> ExecuteBulkAsync(
+        IReadOnlyList<TEntity> entities,
         JsonElement payload,
         CancellationToken cancellationToken);
 }

@@ -388,21 +388,6 @@
           "Granit.Timing": "[0.1.0-dev, )"
         }
       },
-      "granit.io": {
-        "type": "Project",
-        "dependencies": {
-          "Granit": "[0.1.0-dev, )",
-          "Granit.MultiTenancy": "[0.1.0-dev, )"
-        }
-      },
-      "granit.multitenancy": {
-        "type": "Project",
-        "dependencies": {
-          "Granit": "[0.1.0-dev, )",
-          "Granit.DataExchange.Abstractions": "[0.1.0-dev, )",
-          "Granit.QueryEngine.Abstractions": "[0.1.0-dev, )"
-        }
-      },
       "granit.privacy": {
         "type": "Project",
         "dependencies": {
@@ -415,7 +400,6 @@
         "type": "Project",
         "dependencies": {
           "Granit.BlobStorage": "[0.1.0-dev, )",
-          "Granit.IO": "[0.1.0-dev, )",
           "Granit.Privacy": "[0.1.0-dev, )"
         }
       },

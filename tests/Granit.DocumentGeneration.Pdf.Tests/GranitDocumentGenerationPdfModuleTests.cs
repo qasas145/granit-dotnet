@@ -1,5 +1,3 @@
-using Granit.Browsing;
-using Granit.Browsing.Capabilities;
 using Granit.DocumentGeneration.Pipeline;
 using Granit.Modularity;
 using Microsoft.Extensions.Configuration;
@@ -20,9 +18,6 @@ public sealed class GranitDocumentGenerationPdfModuleTests
         services.AddLogging();
         IConfiguration configuration = new ConfigurationBuilder().Build();
         services.AddSingleton(configuration);
-        // Browsing provider stub — required by AddGranitDocumentGenerationPdf's fail-fast.
-        services.AddSingleton(Substitute.For<IHeadlessBrowser>());
-        services.AddSingleton(Substitute.For<IPdfCapability>());
         IHostApplicationBuilder builder = Substitute.For<IHostApplicationBuilder>();
         builder.Services.Returns(services);
 
@@ -36,7 +31,7 @@ public sealed class GranitDocumentGenerationPdfModuleTests
     }
 
     [Fact]
-    public void Module_DependsOn_Browsing_and_DocumentGeneration()
+    public void Module_DependsOn_GranitDocumentGenerationModule()
     {
         DependsOnAttribute[] attributes = typeof(GranitDocumentGenerationPdfModule)
             .GetCustomAttributes(typeof(DependsOnAttribute), inherit: false)
@@ -44,7 +39,6 @@ public sealed class GranitDocumentGenerationPdfModuleTests
             .ToArray();
 
         attributes.Length.ShouldBe(1);
-        attributes[0].DependedTypes.ShouldContain(typeof(GranitBrowsingModule));
         attributes[0].DependedTypes.ShouldContain(typeof(GranitDocumentGenerationModule));
     }
 }

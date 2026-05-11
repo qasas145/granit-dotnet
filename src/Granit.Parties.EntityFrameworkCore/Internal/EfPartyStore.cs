@@ -41,7 +41,6 @@ internal sealed class EfPartyStore(
                 .Include(c => c.Emails)
                 .Include(c => c.Phones)
                 .Include(c => c.ExternalMappings)
-                .AsSplitQuery()
                 .FirstOrDefaultAsync(c => c.Id == id.Value, cancellationToken),
             cancellationToken);
 
@@ -57,7 +56,6 @@ internal sealed class EfPartyStore(
                 .Include(c => c.Emails)
                 .Include(c => c.Phones)
                 .Include(c => c.ExternalMappings)
-                .AsSplitQuery()
                 .FirstOrDefaultAsync(
                     c => c.ExternalMappings.Any(m =>
                         m.ProviderName == providerName && m.ExternalId == externalId),
@@ -78,7 +76,6 @@ internal sealed class EfPartyStore(
                 .Include(c => c.Emails)
                 .Include(c => c.Phones)
                 .Include(c => c.ExternalMappings)
-                .AsSplitQuery()
                 .FirstOrDefaultAsync(c => c.UserId == userId, cancellationToken),
             cancellationToken);
     }

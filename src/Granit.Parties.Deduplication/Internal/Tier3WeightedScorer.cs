@@ -54,7 +54,6 @@ internal sealed class Tier3WeightedScorer(IDbContextFactory<PartiesDbContext> co
             .Include(p => p.Emails)
             .Include(p => p.Phones)
             .Include(p => p.Addresses)
-            .AsSplitQuery()
             .ToListAsync(cancellationToken).ConfigureAwait(false);
 
         var byId = loaded.ToDictionary(p => p.Id);

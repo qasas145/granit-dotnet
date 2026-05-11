@@ -1,58 +1,97 @@
-using System.Security.Claims;
-using Granit.Authorization;
 using Granit.Entities.Actions;
 using Granit.Entities.Actions.Execution;
-using Granit.Entities.Endpoints.Dtos;
-using Granit.Entities.Endpoints.Internal;
+using Granit.Entities.Endpoints.Dtos.BulkActions;
+using Granit.Entities.Internal.BulkActions;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.HttpResults;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
+using System.Linq;
+using System.Text.Json;
 
-namespace Granit.Entities.Endpoints.Endpoints;
+namespace Granit.Entities.Endpoints.Internal;
 
 /// <summary>
-/// <c>POST /api/entities/{name}/bulk/{action}</c> — synchronous bulk runner for
-/// any entity action that opted into server-side execution via
-/// <c>.ServerExecutor&lt;TExecutor&gt;()</c> (ADR-056, story #1822). One round-trip
-/// in, one batched <see cref="Granit.Events.EntityBulkUpdatedEvent{TEntity}"/>
-/// out, per-row failure isolation.
+/// Bulk action endpoint handler. Maps `POST /api/entities/{name}/bulk/{action}`
+/// to execute an action across multiple entity instances in a single request.
 /// </summary>
 internal static class BulkActionEndpoint
 {
-    /// <summary>
-    /// Mounts the bulk-action route on the entity-endpoint group.
-    /// </summary>
-    public static RouteGroupBuilder MapBulkActionEndpoint(this RouteGroupBuilder group)
+    public static void MapBulkActionEndpoint<TEntity>(
+        RouteGroupBuilder group,
+        string entityName,
+        EntityActionDescriptor descriptor,
+        ILogger logger)
+        where TEntity : class
     {
-        group.MapPost("/{name}/bulk/{action}", HandleAsync)
-            .WithName("PostEntityBulkAction")
-            .WithSummary("Executes a registered entity action against the supplied rows in one round-trip.")
-            .WithDescription("Resolves the entity definition and the named action, gates the call through the action's RequiresPermission (defense in depth), then dispatches the run via the framework's BulkActionExecutionOrchestrator. Hosts wire a scoped IEntityActionExecutor<TEntity> per action; an optional IBulkActionExecutor<TEntity> shortcut lets the executor batch the work (one UPDATE … WHERE Id IN (…) call). Per-row failures are returned in the response payload; the call itself returns HTTP 200 whenever the bulk surface accepted the request. One EntityBulkUpdatedEvent<TEntity> is emitted via ILocalEventBus when at least one row succeeded and the entity implements IEmitEntityLifecycleEvents.")
-            .Produces<BulkActionResponse>()
-            .ProducesValidationProblem()
+        if (descriptor.ServerExecutorType is null)
+        {
+            logger.LogWarning(
+                "Skipping bulk action endpoint for '{Action}' on entity '{Entity}': no ServerExecutor configured.",
+                descriptor.Name, entityName);
+            return;
+        }
+
+        RouteHandlerBuilder endpoint = group.MapPost(
+            $"/{entityName}/bulk/{descriptor.Name}",
+            ([FromBody] BulkActionRequest request,
+             [FromServices] BulkActionExecutionOrchestrator endpointOrchestrator,
+             [FromServices] IEntityDefinitionRegistry endpointRegistry,
+             [FromServices] IDbContextFactory<DbContext> endpointDbContextFactory,
+             [FromServices] ILoggerFactory endpointLoggerFactory,
+             CancellationToken cancellationToken) =>
+                BulkActionHandler<TEntity>(
+                    request,
+                    entityName,
+                    descriptor.Name,
+                    endpointOrchestrator,
+                    endpointRegistry,
+                    endpointDbContextFactory,
+                    endpointLoggerFactory,
+                    cancellationToken))
+            .WithName($"BulkExecuteAction{entityName}{descriptor.Name}")
+            .WithSummary($"Executes a bulk action ({descriptor.Name}) on multiple {entityName} entities.")
+            .WithDescription(
+                $"Performs the '{descriptor.Name}' action across multiple selected entities in a single request. "
+                + "Returns the count of successfully affected rows and a list of per-row failures (if any).")
+            .Produces<BulkActionResponse>(StatusCodes.Status200OK)
             .ProducesProblem(StatusCodes.Status400BadRequest)
             .ProducesProblem(StatusCodes.Status403Forbidden)
-            .ProducesProblem(StatusCodes.Status404NotFound);
+            .ProducesProblem(StatusCodes.Status404NotFound)
+            .WithTags(entityName);
 
-        return group;
+        if (descriptor.RequiresPermission is { Length: > 0 } permission)
+        {
+            endpoint.RequireAuthorization(permission);
+        }
+        else
+        {
+            endpoint.RequireAuthorization();
+        }
     }
 
-    private static async Task<Results<Ok<BulkActionResponse>, ProblemHttpResult>> HandleAsync(
+    private static async Task<Results<Ok<BulkActionResponse>, ProblemHttpResult>> BulkActionHandler<TEntity>(
+        [FromBody] BulkActionRequest request,
         string name,
         string action,
-        BulkActionRequest request,
-        [FromServices] IEntityDefinitionRegistry registry,
         [FromServices] BulkActionExecutionOrchestrator orchestrator,
-        [FromServices] IPermissionChecker permissionChecker,
-        HttpContext httpContext,
-        ClaimsPrincipal user,
+        [FromServices] IEntityDefinitionRegistry registry,
+        [FromServices] IDbContextFactory<DbContext> dbContextFactory,
+        [FromServices] ILoggerFactory loggerFactory,
         CancellationToken cancellationToken)
+        where TEntity : class
     {
-        ArgumentNullException.ThrowIfNull(request);
+        ILogger logger = loggerFactory.CreateLogger("Granit.Entities.BulkActionEndpoint");
 
-        // 1. Resolve the entity definition.
+        // Validate request
+        if (request.Ids is null || request.Ids.Count == 0)
+        {
+            return TypedResults.Ok(new BulkActionResponse(Affected: 0, Failures: []));
+        }
+
         IEntityDefinitionDescriptor? definitionRef = registry.GetByName(name);
         if (definitionRef is null)
         {
@@ -61,55 +100,42 @@ internal static class BulkActionEndpoint
                 statusCode: StatusCodes.Status404NotFound);
         }
 
-        EntityDefinitionDescriptor descriptor = definitionRef.Descriptor;
+        EntityActionDescriptor? descriptor = definitionRef.Descriptor.Actions
+            .FirstOrDefault(a => string.Equals(a.Name, action, StringComparison.OrdinalIgnoreCase));
 
-        // 2. Resolve the action by name.
-        EntityActionDescriptor? actionDescriptor = descriptor.Actions
-            .FirstOrDefault(a => string.Equals(a.Name, action, StringComparison.Ordinal));
-
-        if (actionDescriptor is null)
+        if (descriptor is null || descriptor.ServerExecutorType is null || !descriptor.RequiresServerExecution)
         {
             return TypedResults.Problem(
-                detail: $"Entity '{name}' has no action named '{action}'.",
+                detail: $"Bulk action '{action}' is not configured for server-side execution on entity '{name}'.",
                 statusCode: StatusCodes.Status404NotFound);
         }
 
-        // 3. Reject actions that did not opt into server-side execution. The
-        //    selection-bar renderer still uses the per-row URL for those.
-        if (!actionDescriptor.RequiresServerExecution || actionDescriptor.ServerExecutorType is null)
+        // Coalesce null payload to empty object
+        JsonElement payload = request.Payload ?? JsonSerializer.SerializeToElement(new { });
+
+        try
         {
-            return TypedResults.Problem(
-                detail: $"Action '{action}' on entity '{name}' is declarative — it does not opt into server-side execution via .ServerExecutor<>().",
-                statusCode: StatusCodes.Status400BadRequest);
-        }
+            await using DbContext dbContext = await dbContextFactory.CreateDbContextAsync(cancellationToken);
 
-        // 4. Permission gate inherits from the action's RequiresPermission.
-        //    Defense in depth: row-level visibility is the executor's job.
-        if (actionDescriptor.RequiresPermission is { } permission)
+            BulkActionResult result = await orchestrator.ExecuteAsync<TEntity>(
+                descriptor,
+                dbContext,
+                request.Ids,
+                payload,
+                cancellationToken);
+
+            var response = new BulkActionResponse(
+                Affected: result.AffectedCount,
+                Failures: result.Failures
+                    .Select(f => new BulkActionFailureResponse(f.EntityId, f.ErrorMessage))
+                    .ToList());
+
+            return TypedResults.Ok(response);
+        }
+        catch (Exception ex)
         {
-            bool granted = await permissionChecker
-                .IsGrantedAsync(permission, cancellationToken)
-                .ConfigureAwait(false);
-            if (!granted)
-            {
-                return TypedResults.Problem(
-                    detail: $"You do not have permission '{permission}' required by action '{action}'.",
-                    statusCode: StatusCodes.Status403Forbidden);
-            }
+            logger.LogError(ex, "Bulk action '{Action}' failed for entity type '{EntityType}'.", action, typeof(TEntity).Name);
+            throw;
         }
-
-        // 5. Dispatch the run. The orchestrator picks IBulkActionExecutor<T>
-        //    when registered, otherwise loops the per-row executor.
-        BulkActionDispatchResult result = await orchestrator
-            .DispatchAsync(
-                entityType: descriptor.EntityType,
-                serverExecutorType: actionDescriptor.ServerExecutorType,
-                ids: request.Ids,
-                payload: request.Payload,
-                scopedServices: httpContext.RequestServices,
-                cancellationToken: cancellationToken)
-            .ConfigureAwait(false);
-
-        return TypedResults.Ok(new BulkActionResponse(result.Affected, result.Failures));
     }
 }

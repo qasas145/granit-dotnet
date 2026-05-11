@@ -1,6 +1,5 @@
 using Granit.BlobStorage;
 using Granit.BlobStorage.Domain;
-using Granit.BlobStorage.Options;
 using Granit.Documents.Diagnostics;
 using Granit.Documents.Domain;
 using Granit.Documents.Events;
@@ -8,7 +7,6 @@ using Granit.Documents.Exceptions;
 using Granit.Events;
 using Granit.Guids;
 using Granit.MultiTenancy;
-using Granit.Persistence.EntityFrameworkCore;
 using Granit.Timing;
 using Microsoft.EntityFrameworkCore;
 
@@ -31,9 +29,9 @@ internal sealed class DocumentService(
     /// <summary>
     /// Container name used for every blob created by Granit.Documents. Hosts can layer
     /// per-tenant prefixes via <c>IBlobKeyStrategy</c> in <c>BlobStorage</c>; the
-    /// container itself is constant. Mirrors <see cref="DocumentBlobContainers.Documents"/>.
+    /// container itself is constant.
     /// </summary>
-    internal const string ContainerName = DocumentBlobContainers.Documents;
+    internal const string ContainerName = "documents";
 
     /// <inheritdoc />
     public async Task<PresignedUploadTicket> RequestUploadTicketAsync(
@@ -206,7 +204,6 @@ internal sealed class DocumentService(
                 version.Id,
                 version.VersionNumber,
                 version.BlobDescriptorId,
-                version.ContentType,
                 version.SizeBytes,
                 version.UploadedByUserId),
             cancellationToken).ConfigureAwait(false);
@@ -390,7 +387,6 @@ internal sealed class DocumentService(
                 version.Id,
                 version.VersionNumber,
                 version.BlobDescriptorId,
-                version.ContentType,
                 version.SizeBytes,
                 version.UploadedByUserId),
             cancellationToken).ConfigureAwait(false);
@@ -741,139 +737,5 @@ internal sealed class DocumentService(
             .Take(take)];
 
         return new TrashedDocumentPage(rows, totalCount);
-    }
-
-    /// <inheritdoc />
-    public async Task<DocumentVersion?> GetVersionByIdAsync(
-        Guid versionId, CancellationToken cancellationToken = default)
-    {
-        await using DocumentsDbContext context = await contextFactory
-            .CreateDbContextAsync(cancellationToken)
-            .ConfigureAwait(false);
-        return await context.DocumentVersions
-            .FirstOrDefaultAsync(v => v.Id == versionId, cancellationToken)
-            .ConfigureAwait(false);
-    }
-
-    /// <inheritdoc />
-    public async Task<DocumentVersion?> ReplaceVersionBlobAsync(
-        Guid versionId,
-        Guid newBlobDescriptorId,
-        long newSizeBytes,
-        string reason,
-        CancellationToken cancellationToken = default)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(reason);
-        if (newBlobDescriptorId == Guid.Empty)
-        {
-            throw new ArgumentException("Blob descriptor id cannot be empty.", nameof(newBlobDescriptorId));
-        }
-        if (newSizeBytes < 0)
-        {
-            throw new ArgumentOutOfRangeException(nameof(newSizeBytes), "Size must be non-negative.");
-        }
-
-        await using DocumentsDbContext context = await contextFactory
-            .CreateDbContextAsync(cancellationToken)
-            .ConfigureAwait(false);
-
-        DocumentVersion? version = await context.DocumentVersions
-            .FirstOrDefaultAsync(v => v.Id == versionId, cancellationToken)
-            .ConfigureAwait(false);
-        if (version is null)
-        {
-            return null;
-        }
-
-        Guid oldBlobId = version.BlobDescriptorId;
-        long oldSize = version.SizeBytes;
-        if (oldBlobId == newBlobDescriptorId)
-        {
-            return version;
-        }
-
-        version.ReplaceBlob(newBlobDescriptorId, newSizeBytes);
-        await context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-
-        // Rebalance quota. The scrub usually shrinks the blob, but we never trust the
-        // sign of (new - old) — decrement old, increment new keeps the counter exact
-        // even if the new blob is (somehow) larger.
-        if (version.TenantId is { } tid)
-        {
-            if (oldSize > 0)
-            {
-                await quotas.DecrementAsync(tid, oldSize, cancellationToken).ConfigureAwait(false);
-            }
-            if (newSizeBytes > 0)
-            {
-                await quotas.IncrementAsync(tid, newSizeBytes, cancellationToken).ConfigureAwait(false);
-            }
-        }
-
-        // Soft-delete the old blob — bytes go, audit row stays for the 3-year trail.
-        // Idempotent in BlobStorage; swallow BlobNotFound to keep the scrub robust
-        // against a stale source.
-        try
-        {
-            await blobStorage
-                .DeleteAsync(ContainerName, oldBlobId, deletionReason: reason, cancellationToken)
-                .ConfigureAwait(false);
-        }
-        catch (BlobStorage.Exceptions.BlobNotFoundException)
-        {
-            // Old blob already gone — nothing to clean up.
-        }
-
-        await localEventBus.PublishAsync(
-            new DocumentBlobScrubbedEvent(
-                version.DocumentId,
-                version.Id,
-                version.TenantId,
-                oldBlobId,
-                newBlobDescriptorId,
-                oldSize,
-                newSizeBytes,
-                reason,
-                clock.Now),
-            cancellationToken).ConfigureAwait(false);
-
-        return version;
-    }
-
-    /// <inheritdoc />
-    public async Task<PresignedDownloadUrl?> CreatePublicDownloadUrlAsync(
-        Guid documentId,
-        DownloadUrlOptions? options,
-        CancellationToken cancellationToken = default)
-    {
-        await using DocumentsDbContext context = await contextFactory
-            .CreateDbContextAsync(cancellationToken)
-            .ConfigureAwait(false);
-
-        // Public-link redemption is anonymous — no tenant context. Bypass both the
-        // multi-tenant filter (the link carries its own TenantId) and the soft-delete
-        // filter is unnecessary here because Documents are tombstoned via the
-        // DocumentStatus enum rather than a soft-delete flag.
-        Document? document = await context.Documents
-            .IgnoreQueryFilters([GranitFilterNames.MultiTenant])
-            .FirstOrDefaultAsync(d => d.Id == documentId, cancellationToken)
-            .ConfigureAwait(false);
-        if (document is null || document.Status != DocumentStatus.Active || document.CurrentVersionId is null)
-        {
-            return null;
-        }
-
-        DocumentVersion? version = await context.DocumentVersions
-            .IgnoreQueryFilters([GranitFilterNames.MultiTenant])
-            .FirstOrDefaultAsync(v => v.Id == document.CurrentVersionId, cancellationToken)
-            .ConfigureAwait(false);
-        if (version is null)
-        {
-            return null;
-        }
-
-        return await blobStorage
-            .CreateDownloadUrlAsync(ContainerName, version.BlobDescriptorId, options, cancellationToken)
-            .ConfigureAwait(false);
     }
 }

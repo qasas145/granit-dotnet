@@ -35,7 +35,6 @@ internal sealed class PartyMergeableAggregateAdapter(
             .Include(p => p.Emails)
             .Include(p => p.Phones)
             .Include(p => p.ExternalMappings)
-            .AsSplitQuery()
             .FirstOrDefaultAsync(p => p.Id == id, cancellationToken)
             .ConfigureAwait(false);
     }

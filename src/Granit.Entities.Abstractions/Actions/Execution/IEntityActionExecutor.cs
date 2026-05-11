@@ -3,43 +3,37 @@ using System.Text.Json;
 namespace Granit.Entities.Actions.Execution;
 
 /// <summary>
-/// Server-side execution surface for one entity action (ADR-056). Implementations
-/// mutate a single row identified by its primary key and return the post-save
-/// entity so the framework can emit a single batched
-/// <see cref="Granit.Events.EntityBulkUpdatedEvent{TEntity}"/> for the run.
+/// Server-side action execution contract. Implementers handle the business logic
+/// triggered by an action — from simple updates to complex workflows, permissions
+/// checks, and side effects. Each executor is generic over the target entity type.
 /// </summary>
-/// <typeparam name="TEntity">The entity the action targets. Must match the
-/// <c>EntityDefinition{TEntity}</c>'s entity type.</typeparam>
 /// <remarks>
-/// <para>
-/// Executors are resolved scoped per request (the typical implementation needs
-/// a <c>DbContext</c>). Hosts register the executor explicitly via
-/// <c>services.AddScoped&lt;TExecutor&gt;()</c>; the framework does not auto-register
-/// it — the fluent <c>.ServerExecutor&lt;TExecutor&gt;()</c> builder only captures the
-/// type on the descriptor.
-/// </para>
-/// <para>
-/// Row addressing is by <see cref="Guid"/> id — the executor owns the load,
-/// including tenant / soft-delete / Named-Query-Filter application via the
-/// host's <c>DbContext</c>. Rows the executor cannot find or chooses to
-/// reject for row-level visibility reasons (defense in depth) must be
-/// reported back through <see cref="EntityActionExecutionResult{TEntity}.FailureReason"/>.
-/// </para>
+/// Implementations are discovered via DI and registered per action via
+/// <see cref="EntityActionBuilder{TEntity}.ServerExecutor{TExecutor}()"/>.
+/// The framework guarantees the entity instance passed to <see cref="ExecuteAsync"/>
+/// matches the declared generic type.
 /// </remarks>
+/// <typeparam name="TEntity">The entity type this executor acts upon.</typeparam>
 public interface IEntityActionExecutor<TEntity>
     where TEntity : class
 {
     /// <summary>
-    /// Executes the action against the row identified by <paramref name="id"/>.
-    /// Returns the post-save entity on success and <see langword="null"/> with a
-    /// <see cref="EntityActionExecutionResult{TEntity}.FailureReason"/> when the
-    /// row was rejected (not found, permission denied, invariant violated, …).
+    /// Executes the action against a single entity instance. The payload is parsed
+    /// from the client request and opaque to the framework — interpreting its
+    /// structure is the executor's responsibility.
     /// </summary>
-    /// <param name="id">Primary key of the targeted row.</param>
-    /// <param name="payload">Free-form JSON payload supplied by the caller. May be <see cref="JsonElement.ValueKind"/> <c>Undefined</c> when the action takes no parameters.</param>
-    /// <param name="cancellationToken">Request cancellation token.</param>
-    Task<EntityActionExecutionResult<TEntity>> ExecuteAsync(
-        Guid id,
-        JsonElement payload,
-        CancellationToken cancellationToken);
+    /// <param name="entity">The entity instance to act upon. Materialized from the
+    /// database and ready for modification. Entity state changes (e.g., property
+    /// mutations) are NOT automatically saved — the executor owns transaction
+    /// orchestration via injected <c>IUnitOfWork</c> or DbContext.</param>
+    /// <param name="payload">Client-provided action parameters as a JSON element.
+    /// May be an empty object (<c>{}</c>). Null checks and shape validation are
+    /// the executor's responsibility.</param>
+    /// <param name="cancellationToken">Cancellation signal for async work.</param>
+    /// <returns>
+    /// <see cref="ActionResult"/> indicating success or failure. On success,
+    /// the executor should have committed all changes. On failure, the framework
+    /// records the error and includes it in the bulk response.
+    /// </returns>
+    Task<ActionResult> ExecuteAsync(TEntity entity, JsonElement payload, CancellationToken cancellationToken);
 }

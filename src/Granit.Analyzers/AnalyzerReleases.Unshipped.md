@@ -20,4 +20,3 @@ GRAPI003 | Api | Warning | MinimalApiServiceParameterAnalyzer, IsEnabledByDefaul
 GRMOD001 | Architecture | Error | CrossModuleReferenceAnalyzer, IsEnabledByDefault=True
 GRSEC010 | Security | Error | TagListPiiAnalyzer, IsEnabledByDefault=True
 GRSEC011 | Security | Error | LoggerMessagePiiAnalyzer, IsEnabledByDefault=True
-GRBROWSING001 | Security | Warning | EvaluateAsyncStringInterpolationAnalyzer, IsEnabledByDefault=True (Granit.Browsing IBrowserPage JS-injection guard)

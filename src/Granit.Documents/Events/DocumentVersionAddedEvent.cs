@@ -13,6 +13,5 @@ public sealed record DocumentVersionAddedEvent(
     Guid VersionId,
     int VersionNumber,
     Guid BlobDescriptorId,
-    string ContentType,
     long SizeBytes,
     Guid UploadedByUserId) : IDomainEvent;

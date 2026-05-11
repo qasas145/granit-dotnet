@@ -25,11 +25,6 @@ internal sealed class TenantStorageQuotaConfiguration : IEntityTypeConfiguration
 
         builder.Property(e => e.LimitBytes).IsRequired();
         builder.Property(e => e.UsageBytes).IsRequired();
-        // F16.2: additive column tracking framework-generated rendition bytes.
-        // Defaults to 0 — existing rows materialise with 0 with no backfill needed.
-        builder.Property(e => e.RenditionUsageBytes)
-            .IsRequired()
-            .HasDefaultValue(0L);
         builder.Property(e => e.UpdatedAt).IsRequired();
 
         // Exactly one quota row per tenant. The unique index also lights up the

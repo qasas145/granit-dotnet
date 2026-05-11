@@ -38,7 +38,6 @@ internal sealed class EfPlanReader(
         ReadAsync(async db => await db.Plans
             .Include(p => p.Prices)
             .Include(p => p.ExternalMappings)
-            .AsSplitQuery()
             .FirstOrDefaultAsync(
                 p => p.ExternalMappings.Any(m => m.ProviderName == providerName && m.ExternalId == externalId),
                 cancellationToken)

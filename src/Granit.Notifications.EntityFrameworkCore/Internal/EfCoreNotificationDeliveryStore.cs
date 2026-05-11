@@ -2,7 +2,6 @@ using Granit.Notifications.Abstractions;
 using Granit.Notifications.Domain;
 using Granit.Persistence.EntityFrameworkCore;
 using Granit.Persistence.EntityFrameworkCore.ExceptionHandling;
-using Granit.Timing;
 using Microsoft.EntityFrameworkCore;
 
 namespace Granit.Notifications.EntityFrameworkCore.Internal;
@@ -20,15 +19,9 @@ namespace Granit.Notifications.EntityFrameworkCore.Internal;
 /// </para>
 /// </remarks>
 internal sealed class EfCoreNotificationDeliveryStore(
-    IDbContextFactory<NotificationsDbContext> contextFactory,
-    IClock clock)
+    IDbContextFactory<NotificationsDbContext> contextFactory)
     : EfStoreBase<NotificationDeliveryAttempt, NotificationsDbContext>(contextFactory), INotificationDeliveryWriter
 {
-    // Rows claimed but never finalized (worker crash, host OOM) are eligible for re-acquisition
-    // after this window. Keeps the audit row in place but unblocks subsequent retries instead of
-    // permanently dropping the notification.
-    internal static readonly TimeSpan InFlightClaimTimeout = TimeSpan.FromMinutes(5);
-
     /// <inheritdoc/>
     public Task<bool> HasBeenDeliveredAsync(Guid deliveryId, CancellationToken cancellationToken = default) =>
         AnyAsync(a => a.DeliveryId == deliveryId && a.IsSuccess == true, cancellationToken);
@@ -48,7 +41,7 @@ internal sealed class EfCoreNotificationDeliveryStore(
         }
         catch (DbUpdateException ex) when (DbUpdateExceptionHelper.IsDuplicateKeyException(ex))
         {
-            return await ResumeFailedOrStuckDeliveryAsync(claim.DeliveryId, cancellationToken)
+            return await ResumeFailedDeliveryForRetryAsync(claim.DeliveryId, cancellationToken)
                 .ConfigureAwait(false);
         }
     }
@@ -86,29 +79,17 @@ internal sealed class EfCoreNotificationDeliveryStore(
                 .ConfigureAwait(false),
             cancellationToken);
 
-    // The unique index on DeliveryId means there is exactly one audit row per logical delivery,
-    // so resume mutates that row in place rather than appending. ErrorMessage and DurationMs from
-    // the prior failed attempt are intentionally preserved: CompleteDeliveryAttemptAsync overwrites
-    // them with the outcome of the new attempt, so the row always reflects the LAST attempt — never
-    // a half-zeroed state that would mislead operators investigating ISO 27001 audit trails.
-    //
-    // OccurredAt is rewritten to "now" because it is the freshness signal the in-flight TTL
-    // depends on. Without this bump, a resume of a long-stale failed row would leave OccurredAt
-    // far in the past — a concurrent worker arriving milliseconds later would see the TTL as
-    // already expired and double-claim, regressing the duplicate-send guarantee from #947.
-    private Task<bool> ResumeFailedOrStuckDeliveryAsync(Guid deliveryId, CancellationToken cancellationToken) =>
-        WriteAsync(
+    private Task<bool> ResumeFailedDeliveryForRetryAsync(Guid deliveryId, CancellationToken cancellationToken) =>
+        ReadAsync(
             async db =>
             {
-                DateTimeOffset now = clock.Now;
-                DateTimeOffset stuckCutoff = now - InFlightClaimTimeout;
                 int updated = await Query(db)
-                    .Where(a => a.DeliveryId == deliveryId
-                        && (a.IsSuccess == false || (a.IsSuccess == null && a.OccurredAt < stuckCutoff)))
+                    .Where(a => a.DeliveryId == deliveryId && a.IsSuccess == false)
                     .ExecuteUpdateAsync(
                         setters => setters
                             .SetProperty(a => a.IsSuccess, (bool?)null)
-                            .SetProperty(a => a.OccurredAt, now),
+                            .SetProperty(a => a.ErrorMessage, (string?)null)
+                            .SetProperty(a => a.DurationMs, 0L),
                         cancellationToken)
                     .ConfigureAwait(false);
                 return updated == 1;

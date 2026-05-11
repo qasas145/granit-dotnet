@@ -1,5 +1,3 @@
-using Granit.Entities.Actions.Execution;
-
 namespace Granit.Entities.Actions;
 
 /// <summary>
@@ -32,7 +30,9 @@ public sealed class EntityActionBuilder<TEntity>
     private bool _showOnCalendarTile;
     private bool _showOnListHeader;
     private bool _showOnSelection;
+    private bool _requiresServerExecution;
     private Type? _serverExecutorType;
+    private Type? _bulkExecutorType;
 
     // RouteBase composition state — populated by verb shortcuts (Post / Put / Delete /
     // Patch / Get / Download). At Build() time, if no explicit URL was supplied via
@@ -328,24 +328,51 @@ public sealed class EntityActionBuilder<TEntity>
     }
 
     /// <summary>
-    /// Opts the action into server-side execution (ADR-056). Flags
-    /// <see cref="EntityActionDescriptor.RequiresServerExecution"/> on the
-    /// descriptor and captures <typeparamref name="TExecutor"/> as
-    /// <see cref="EntityActionDescriptor.ServerExecutorType"/> so the bulk
-    /// endpoint can resolve it through DI.
+    /// Registers a server-side executor for this action and flags it as requiring
+    /// server execution. The executor is responsible for implementing the business
+    /// logic when the action is invoked via the bulk endpoint or single-entity API.
     /// </summary>
-    /// <remarks>
-    /// The builder does NOT register the executor in DI — hosts add it
-    /// explicitly via <c>services.AddScoped&lt;TExecutor&gt;()</c> (and optionally
-    /// <c>services.AddScoped&lt;IBulkActionExecutor&lt;TEntity&gt;, TExecutor&gt;()</c>
-    /// when the executor implements the bulk-friendly variant). The archi test
-    /// <c>ServerExecutorRegistrationTests</c> enforces the registration shape.
-    /// </remarks>
-    /// <typeparam name="TExecutor">Implementation of <see cref="IEntityActionExecutor{TEntity}"/>.</typeparam>
+    /// <typeparam name="TExecutor">A concrete class implementing
+    /// <see cref="Execution.IEntityActionExecutor{TEntity}"/> for this entity type.
+    /// The executor is resolved from DI at action execution time.</typeparam>
+    /// <returns>This builder for fluent chaining.</returns>
+    /// <exception cref="InvalidOperationException">
+    /// Thrown if <typeparamref name="TExecutor"/> does not implement
+    /// <see cref="Execution.IEntityActionExecutor{TEntity}"/>.
+    /// </exception>
     public EntityActionBuilder<TEntity> ServerExecutor<TExecutor>()
-        where TExecutor : class, IEntityActionExecutor<TEntity>
+        where TExecutor : class, Execution.IEntityActionExecutor<TEntity>
     {
+        _requiresServerExecution = true;
         _serverExecutorType = typeof(TExecutor);
+        return this;
+    }
+
+    /// <summary>
+    /// Optionally registers a bulk-optimized executor for batch operations on this action.
+    /// When registered, the bulk action endpoint will invoke this executor instead of
+    /// looping per-entity via the single-entity executor. If not registered, bulk operations
+    /// automatically fall back to per-entity calls.
+    /// </summary>
+    /// <typeparam name="TBulkExecutor">A concrete class implementing
+    /// <see cref="Execution.IBulkActionExecutor{TEntity}"/> for this entity type.
+    /// The executor is resolved from DI at action execution time.</typeparam>
+    /// <returns>This builder for fluent chaining.</returns>
+    /// <remarks>
+    /// <see cref="ServerExecutor{TExecutor}()"/> must be called before this method —
+    /// a bulk executor only makes sense alongside a registered single-entity executor.
+    /// </remarks>
+    public EntityActionBuilder<TEntity> BulkExecutor<TBulkExecutor>()
+        where TBulkExecutor : class, Execution.IBulkActionExecutor<TEntity>
+    {
+        if (!_requiresServerExecution)
+        {
+            throw new InvalidOperationException(
+                $"Action '{_name}' cannot register a bulk executor without first registering a single-entity executor. "
+                + "Call .ServerExecutor<TExecutor>() before .BulkExecutor<TBulkExecutor>().");
+        }
+
+        _bulkExecutorType = typeof(TBulkExecutor);
         return this;
     }
 
@@ -408,8 +435,9 @@ public sealed class EntityActionBuilder<TEntity>
             ShowOnCalendarTile: _showOnCalendarTile,
             ShowOnListHeader: _showOnListHeader,
             ShowOnSelection: _showOnSelection,
-            RequiresServerExecution: _serverExecutorType is not null,
-            ServerExecutorType: _serverExecutorType);
+            RequiresServerExecution: _requiresServerExecution,
+            ServerExecutorType: _serverExecutorType,
+            BulkExecutorType: _bulkExecutorType);
     }
 
     private string? ResolveUrl()

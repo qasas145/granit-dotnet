@@ -1,6 +1,5 @@
 using Granit.BackgroundJobs.EntityFrameworkCore;
 using Granit.BlobStorage.EntityFrameworkCore;
-using Granit.Identity.EntityFrameworkCore;
 using Granit.MultiTenancy.EntityFrameworkCore;
 using Granit.Persistence.EntityFrameworkCore;
 using Shouldly;
@@ -98,32 +97,5 @@ public sealed class DbPropertiesFallbackTests : IDisposable
         GranitDbDefaults.HostDbSchema = "infra";
 
         GranitBackgroundJobsDbProperties.DbSchema.ShouldBe("infra");
-    }
-
-    // ── Host module: GranitIdentityDbProperties ──────────────────────
-
-    [Fact]
-    public void Identity_HostDbSchemaSet_ReturnsHostSchema()
-    {
-        GranitDbDefaults.HostDbSchema = "host";
-
-        GranitIdentityDbProperties.DbSchema.ShouldBe("host");
-    }
-
-    [Fact]
-    public void Identity_OnlyDbSchemaSet_FallsBackToDbSchema()
-    {
-        GranitDbDefaults.DbSchema = "myapp";
-
-        GranitIdentityDbProperties.DbSchema.ShouldBe("myapp");
-    }
-
-    [Fact]
-    public void Identity_BothSet_PrefersHostDbSchema()
-    {
-        GranitDbDefaults.DbSchema = "myapp";
-        GranitDbDefaults.HostDbSchema = "host";
-
-        GranitIdentityDbProperties.DbSchema.ShouldBe("host");
     }
 }

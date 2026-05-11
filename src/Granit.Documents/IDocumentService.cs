@@ -1,5 +1,4 @@
 using Granit.BlobStorage;
-using Granit.BlobStorage.Options;
 using Granit.Documents.Domain;
 
 namespace Granit.Documents;
@@ -176,66 +175,5 @@ public interface IDocumentService
     Task<TrashedDocumentPage> ListTrashedAsync(
         int skip,
         int take,
-        CancellationToken cancellationToken = default);
-
-    /// <summary>
-    /// Returns the <see cref="DocumentVersion"/> with the given identifier, or <c>null</c>
-    /// when not found / excluded by the tenant filter. Convenience accessor consumed by
-    /// downstream post-upload flows (F17.4 / F17.9) that need to re-read a version's
-    /// current <c>BlobDescriptorId</c> rather than rely on a stale event snapshot.
-    /// </summary>
-    Task<DocumentVersion?> GetVersionByIdAsync(Guid versionId, CancellationToken cancellationToken = default);
-
-    /// <summary>
-    /// Atomically swaps the blob backing a <see cref="DocumentVersion"/> for a freshly-
-    /// uploaded sanitised one. Reserved for GDPR-driven scrub flows (F17.9 — GPS strip on
-    /// upload).
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// The implementation updates the version's <c>BlobDescriptorId</c> + <c>SizeBytes</c>,
-    /// soft-deletes the old blob via <see cref="IBlobStorage.DeleteAsync"/>, rebalances the
-    /// tenant's storage quota (decrement old, increment new — the scrubbed blob is
-    /// typically smaller) and publishes a <c>DocumentBlobScrubbedEvent</c> for the audit
-    /// trail. All inside a single <c>SaveChangesAsync</c>.
-    /// </para>
-    /// <para>
-    /// Returns the updated <see cref="DocumentVersion"/>, or <c>null</c> when the version
-    /// is not found / excluded by the tenant filter.
-    /// </para>
-    /// </remarks>
-    /// <param name="versionId">Identifier of the version whose blob to replace.</param>
-    /// <param name="newBlobDescriptorId">Identifier of the freshly-uploaded scrubbed blob (already <c>Valid</c>).</param>
-    /// <param name="newSizeBytes">Verified size of the scrubbed blob.</param>
-    /// <param name="reason">Audit reason recorded on <c>DocumentBlobScrubbedEvent</c> (e.g. <c>"gps-strip"</c>).</param>
-    /// <param name="cancellationToken">Cancellation token.</param>
-    Task<DocumentVersion?> ReplaceVersionBlobAsync(
-        Guid versionId,
-        Guid newBlobDescriptorId,
-        long newSizeBytes,
-        string reason,
-        CancellationToken cancellationToken = default);
-
-    /// <summary>
-    /// Issues a presigned download URL for the document's current version, bypassing
-    /// the multi-tenant query filter — reserved for anonymous public-link redemption
-    /// (F18.3). The caller is expected to have already authorised the request through
-    /// a non-HTTP mechanism (bearer-token hash lookup on a <c>DocumentPublicLink</c>).
-    /// </summary>
-    /// <remarks>
-    /// Returns <c>null</c> when the document is not found, has no current version yet,
-    /// or is trashed / permanently-deleted. No <c>DocumentDownloadedEvent</c> is raised
-    /// — public-link consumption emits its own <c>DocumentPublicLinkConsumedEvent</c>
-    /// for the ISO 27001 audit trail.
-    /// </remarks>
-    /// <param name="documentId">Document whose current version should be served.</param>
-    /// <param name="options">
-    /// Optional download parameters — set <see cref="DownloadUrlOptions.DownloadFileName"/>
-    /// to force <c>Content-Disposition: attachment</c>; leave <c>null</c> for inline preview.
-    /// </param>
-    /// <param name="cancellationToken">Cancellation token.</param>
-    Task<PresignedDownloadUrl?> CreatePublicDownloadUrlAsync(
-        Guid documentId,
-        DownloadUrlOptions? options,
         CancellationToken cancellationToken = default);
 }
